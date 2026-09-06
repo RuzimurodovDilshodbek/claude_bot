@@ -1,0 +1,26 @@
+[Unit]
+Description=Claude Telegram bot (Telegram + agentlar uchun hub)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claudebot
+Group=claudebot
+WorkingDirectory=/home/claudebot/claude-tg
+Environment=PATH=/home/claudebot/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/claudebot/claude-tg/.venv/bin/python /home/claudebot/claude-tg/bot.py
+Restart=always
+RestartSec=10
+# Tarmoq uzilib bot o'zini qayta yoqishi normal holat — cheklovga tushmasin.
+StartLimitIntervalSec=0
+
+# Xavfsizlik: bot faqat o'z papkasida yozadi.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/claudebot
+
+[Install]
+WantedBy=multi-user.target

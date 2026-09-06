@@ -1,0 +1,40 @@
+# === SIRLAR — hech qachon commit qilinmasin ===
+# .env da Telegram tokeni, Gemini kaliti, Claude OAuth tokeni va agent
+# maxfiy so'zi bor. Repo OCHIQ — bular tushsa, kompyuterlarga kirish
+# ochilib qoladi.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_token*
+*secret*
+
+# === Har bir mashinaga xos ===
+# DIQQAT: izohlar alohida qatorda bo'lishi shart. Git faqat qator
+# boshidagi `#` ni izoh deb biladi — naqsh yonidagi izoh naqshning
+# bir qismiga aylanadi va hech narsaga mos kelmaydi.
+
+# kompyuterning barqaror ID si
+agent_id.txt
+# qaysi chat qaysi sessiyada
+state.json
+# vazifalar tarixi — promptlaringiz bor, shaxsiy
+history.jsonl
+.restarted
+
+# === Muhit va loglar ===
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.log
+*.log.*
+bot.log*
+agent.log*
+
+# === Vaqtinchalik ===
+scratch_*.py
+*.bak
+*.tmp
+deploy/server.env

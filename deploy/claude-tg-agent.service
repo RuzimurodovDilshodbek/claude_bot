@@ -1,0 +1,25 @@
+[Unit]
+Description=Claude agent (serverning o'z loyihalari uchun)
+After=claude-tg-bot.service
+Wants=claude-tg-bot.service
+
+[Service]
+Type=simple
+User=claudebot
+Group=claudebot
+WorkingDirectory=/home/claudebot/claude-tg
+Environment=PATH=/home/claudebot/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/claudebot/claude-tg/.venv/bin/python /home/claudebot/claude-tg/agent.py
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+
+NoNewPrivileges=true
+PrivateTmp=true
+# Agent Claude'ni ishga tushiradi va serverdagi loyihalarni tahrirlashi kerak,
+# shuning uchun ProtectSystem=full (/usr, /boot, /etc faqat o'qish uchun),
+# lekin /home va /opt yoziladigan qoladi.
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
