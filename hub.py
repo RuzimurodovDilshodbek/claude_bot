@@ -145,7 +145,16 @@ class Hub:
         self.token = token
         self.name = name
         self._machines: dict[str, Machine] = {}
+        # Uzilgan kompyuterning nomini eslab qolamiz — "ishxona qayta
+        # ulanishini kutyapmiz" deyish uchun ID emas, nom kerak.
+        self._known_names: dict[str, str] = {}
         self._server = None
+
+    def known_name(self, agent_id: str) -> str:
+        machine = self._machines.get(agent_id)
+        if machine is not None:
+            return machine.name
+        return self._known_names.get(agent_id, "")
 
     # -- botga ko'rinadigan API -------------------------------------------
     def machines(self) -> list[Machine]:
@@ -228,6 +237,7 @@ class Hub:
 
         machine = Machine(ws, info)
         self._machines[info.agent_id] = machine
+        self._known_names[info.agent_id] = info.name
         await ws.send(protocol.dumps(protocol.welcome(self.name)))
         log.info("Kompyuter ulandi: %s (%s, %s) — %d loyiha, %d sessiya",
                  info.name, info.agent_id[:8], info.platform,

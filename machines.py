@@ -9,6 +9,7 @@ maydon nomlariga ega, shuning uchun botning formatlash kodi o'zgarmaydi.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -114,8 +115,39 @@ def resolve(agent_id: str | None) -> str:
 
 
 def display_name(agent_id: str) -> str:
-    machine = hub().get(agent_id)
-    return machine.name if machine else "(ulanmagan)"
+    if not agent_id:
+        return "tanlanmagan"
+    name = hub().known_name(agent_id)
+    if not name:
+        return "(noma'lum)"
+    return name if hub().get(agent_id) else f"{name} (ulanmagan)"
+
+
+def is_online(agent_id: str) -> bool:
+    return bool(agent_id) and hub().get(agent_id) is not None
+
+
+async def wait_for(agent_id: str, timeout: float = 600.0,
+                   on_wait: Callable[[float], Awaitable[None]] | None = None) -> bool:
+    """Kompyuter qayta ulanishini kutadi.
+
+    Tarmoq bu yerda tez-tez uziladi (DNS ham, TLS ham). Vazifani darhol rad
+    etish o'rniga biroz kutish foydalanuvchi uchun ancha yaxshi — agent
+    odatda bir necha daqiqada o'zi qaytadi.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if is_online(agent_id):
+            return True
+        if on_wait is not None:
+            try:
+                await on_wait(deadline - _time.monotonic())
+            except Exception:
+                pass
+        await asyncio.sleep(4)
+    return is_online(agent_id)
 
 
 # --------------------------------------------------------------------------

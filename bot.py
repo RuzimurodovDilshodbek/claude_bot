@@ -1212,6 +1212,12 @@ class Progress:
             self.lines.append(f"⚠️ {text}")
         elif kind == "retry":
             self.lines.append(f"🔁 {text}")
+        elif kind == "wait":
+            # Kutish holati bitta qatorda yangilanib tursin, ro'yxatni
+            # to'ldirmasin.
+            self.lines = [ln for ln in self.lines if not ln.startswith("⏸")]
+            self.lines.append(f"⏸ {text}")
+            return await self.flush(force=True)
         elif kind == "start":
             self.lines.append(f"▶️ {text}")
         elif kind == "text":
@@ -1296,9 +1302,15 @@ async def _launch(
     try:
         agent_id = machines.resolve(st.agent_id)
     except machines.NoMachine as exc:
-        return await send(
-            f"💻 {exc}\n\nUlangan kompyuterlar: /pc", html_mode=False
-        )
+        # Tanlangan kompyuter vaqtincha uzilgan bo'lishi mumkin — tarmoq bu
+        # yerda tez-tez uziladi. Uni tashlab yubormaymiz, vazifani navbatga
+        # qo'yib qayta ulanishini kutamiz.
+        if st.agent_id and machines.hub().known_name(st.agent_id):
+            agent_id = st.agent_id
+        else:
+            return await send(
+                f"💻 {exc}\n\nUlangan kompyuterlar: /pc", html_mode=False
+            )
     if agent_id != st.agent_id:
         st.agent_id = agent_id
         save_states()
@@ -1355,6 +1367,20 @@ async def _execute(
     running: RunningTask,
 ) -> None:
     try:
+        # Kompyuter uzilgan bo'lsa — darhol rad etmaymiz, qaytishini kutamiz.
+        if not machines.is_online(running.agent_id):
+            name = machines.hub().known_name(running.agent_id) or "kompyuter"
+
+            async def waiting(remaining: float) -> None:
+                await progress("wait", f"{name} qayta ulanishini kutyapmiz "
+                                       f"({int(remaining)} s qoldi)")
+
+            await waiting(OFFLINE_WAIT)
+            if not await machines.wait_for(running.agent_id, OFFLINE_WAIT, waiting):
+                raise ConnectionError(
+                    f"{name} {int(OFFLINE_WAIT // 60)} daqiqa ichida ulanmadi"
+                )
+
         payload = await machines.run(
             running.agent_id, running.prompt, running.cwd,
             st.session_id or None, st.model,
@@ -1365,9 +1391,9 @@ async def _execute(
         log.warning("Kompyuter bilan aloqa uzildi: %s", exc)
         result = machines.RunOutcome(
             ok=False,
-            error=f"Kompyuter bilan aloqa uzildi ({machines.display_name(running.agent_id)}). "
-                  "Vazifa u yerda davom etayotgan bo'lishi mumkin — "
-                  "kompyuter qayta ulangach /sessions dan tekshiring.",
+            error=(f"💻 {exc}\n\n"
+                   "Vazifa yuborilmadi. Kompyuter yonganini tekshiring "
+                   "va qaytadan yuboring."),
         )
     except asyncio.TimeoutError:
         result = machines.RunOutcome(ok=False, error="Vazifa vaqti tugadi.")
@@ -1520,6 +1546,9 @@ MAX_DEFERRALS = 10        # vazifa ishlayotganda necha marta kechiktiramiz
 # PTB uzun so'rov bilan har ~10 sekundda getUpdates qiladi. 150 sekundlik
 # sukunat — polling haqiqatan to'xtaganini bildiradi.
 POLL_SILENCE_LIMIT = 150
+# Kompyuter uzilganda vazifani shu muddat ichida kutamiz. Bu yerda
+# tarmoq bir necha daqiqaga uzilib turishi odatiy hol.
+OFFLINE_WAIT = 600.0
 
 
 def _restart_process(reason: str) -> None:
@@ -1644,6 +1673,16 @@ async def post_init(app: Application) -> None:
 
 
 async def post_shutdown(app: Application) -> None:
+    # Qorovul asyncio vazifasi — to'xtatmasak, chiqishda
+    # "Task was destroyed but it is pending" xatosi chiqadi.
+    global _watchdog_task
+    if _watchdog_task is not None:
+        _watchdog_task.cancel()
+        try:
+            await _watchdog_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _watchdog_task = None
     try:
         await machines.hub().stop()
     except Exception:
