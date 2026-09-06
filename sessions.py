@@ -6,6 +6,7 @@ saqlaydi. Bu modul shu fayllardan loyiha va sessiya ro'yxatini yig'adi.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -258,6 +259,97 @@ def noisy_sessions() -> list[SessionInfo]:
                 out.append(info)
     out.sort(key=lambda s: s.mtime, reverse=True)
     return out
+
+
+# --------------------------------------------------------------------------
+# Sessiya hozir kompyuterda ochiqmi?
+#
+# Claude Code har bir ishlayotgan sessiyani `~/.claude/sessions/<pid>.json`
+# da qayd qiladi: sessionId, cwd, pid, kind, entrypoint. Jarayon tugaganda
+# fayl qolib ketishi mumkin, shuning uchun PID tirikligini ham tekshiramiz.
+# --------------------------------------------------------------------------
+SESSIONS_DIR = config.PROJECTS_DIR.parent / "sessions"
+
+
+def _pid_alive(pid: int) -> bool:
+    """Jarayon tirikmi.
+
+    DIQQAT: Windows'da `os.kill(pid, 0)` ISHLATILMAYDI — u yerda os.kill
+    TerminateProcess ni chaqiradi va jarayonni haqiqatan O'LDIRADI.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+
+    try:
+        os.kill(pid, 0)  # POSIX'da xavfsiz — faqat tekshiradi
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # boshqa foydalanuvchiniki, lekin mavjud
+
+
+# Botning o'z yurishlari ham shu yerga qayd qilinadi (runner.py
+# CLAUDE_CODE_ENTRYPOINT=telegram-bot qo'yadi). Ular "kompyuterda ochiq"
+# hisoblanmasligi kerak — aks holda bot o'zini o'zi ogohlantiradi.
+BOT_ENTRYPOINT = "telegram-bot"
+
+
+def open_sessions(interactive_only: bool = True) -> dict[str, dict]:
+    """Hozir ochiq sessiyalar: {session_id: {pid, cwd, kind, entrypoint, ...}}.
+
+    `interactive_only` — faqat odam ochgan sessiyalar (Claude Code ilovasi
+    yoki terminal); botning o'z yurishlari hisobga olinmaydi.
+    """
+    out: dict[str, dict] = {}
+    if not SESSIONS_DIR.exists():
+        return out
+
+    for f in SESSIONS_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        session_id = data.get("sessionId")
+        pid = data.get("pid")
+        if not session_id or not _pid_alive(pid):
+            continue  # yozuv yo'q yoki eskirgan
+        if interactive_only and data.get("entrypoint") == BOT_ENTRYPOINT:
+            continue  # bizning o'z vazifamiz
+        out[session_id] = {
+            "pid": pid,
+            "cwd": data.get("cwd", ""),
+            "kind": data.get("kind", ""),
+            "entrypoint": data.get("entrypoint", ""),
+            "name": data.get("name", ""),
+            "version": data.get("version", ""),
+        }
+    return out
+
+
+def session_state(session_id: str) -> dict:
+    """Bitta sessiya holati — bot ogohlantirish uchun so'raydi."""
+    info = open_sessions().get(session_id)
+    return {"open": info is not None, **(info or {})}
 
 
 def transcript_tail(path: Path, turns: int = 6) -> list[tuple[str, str]]:

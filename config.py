@@ -79,11 +79,21 @@ def resolve_claude_bin() -> str:
         return "claude"
 
     p = Path(found)
+
+    # Haqiqiy bajariladigan faylni afzal ko'ramiz. .cmd/.ps1 shim ni
+    # subprocess to'g'ridan-to'g'ri ishga tushira olmaydi — cmd.exe orqali
+    # o'rash kerak bo'ladi, bu esa vazifani to'xtatishni ishonchsiz qiladi:
+    # cmd.exe o'ladi, lekin claude.exe tirik qolishi mumkin.
+    if p.suffix.lower() in (".cmd", ".bat", ".ps1", ""):
+        candidates = [
+            p.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe",
+            p.with_suffix(".exe"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+
     if p.suffix.lower() == ".ps1":
-        cmd = p.with_suffix(".cmd")
-        if cmd.exists():
-            return str(cmd)
-    if p.suffix == "":
         cmd = p.with_suffix(".cmd")
         if cmd.exists():
             return str(cmd)

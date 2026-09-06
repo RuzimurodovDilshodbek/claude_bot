@@ -131,6 +131,9 @@ class Agent:
                     items = proj.sessions[:limit] if proj else []
                 else:
                     items = sessions.recent_sessions(limit)
+                # Ochiq sessiyalarni bir marta hisoblaymiz (har biri uchun
+                # alohida emas — PID tekshiruvi arzon emas).
+                live = sessions.open_sessions()
                 data = [
                     {
                         "session_id": s.session_id,
@@ -140,6 +143,7 @@ class Agent:
                         "project_key": s.project_key,
                         "user_turns": s.user_turns,
                         "mtime": s.mtime,
+                        "is_open": s.session_id in live,
                     }
                     for s in items
                 ]
@@ -183,6 +187,13 @@ class Agent:
                 log.info("Tozalandi: %d sessiya, %d bayt", deleted, freed)
                 await self.send(protocol.res(rid, True,
                                              {"deleted": deleted, "freed": freed}))
+
+            elif op == protocol.OP_SESSION_STATE:
+                # Sessiya shu kompyuterda Claude Code ilovasida
+                # ochiq turganini aniqlaydi.
+                await self.send(protocol.res(
+                    rid, True,
+                    sessions.session_state(args.get('session_id') or '')))
 
             elif op == protocol.OP_RUN:
                 asyncio.create_task(self.do_run(rid, args))

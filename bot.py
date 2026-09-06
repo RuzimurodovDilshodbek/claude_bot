@@ -817,12 +817,19 @@ async def cmd_sessions(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [f"<b>Sessiyalar</b> · 💻 "
              f"{html.escape(machines.display_name(agent_id))} · {scope_label}", ""]
     now = time.time()
+    any_open = False
     for s in items:
+        mark = "🟢" if getattr(s, "is_open", False) else "💬"
+        any_open = any_open or getattr(s, "is_open", False)
         lines.append(
-            f"💬 <b>{html.escape(tgfmt.trim(s.label, 60))}</b>\n"
+            f"{mark} <b>{html.escape(tgfmt.trim(s.label, 60))}</b>\n"
             f"    <code>{html.escape(s.project_name)}</code> · "
             f"{s.user_turns} xabar · {tgfmt.human_age(now - s.mtime)}"
         )
+    if any_open:
+        lines.append("")
+        lines.append("🟢 — hozir kompyuterda ochiq. Unga yozsangiz "
+                     "yozishmalar aralashib ketishi mumkin.")
     if st.session_id:
         lines.append("")
         lines.append(f"Hozir bog'langan: <code>{st.session_id[:8]}</code>")
@@ -1344,6 +1351,25 @@ async def _launch(
             f"allaqachon ishlayapti (<i>{html.escape(tgfmt.trim(other.prompt, 100))}</i>).\n"
             "Fayllar bir-birini bosishi mumkin — ogohsizlik oxirida kod yo'qolishi mumkin."
         )
+
+    # Sessiya kompyuterda Claude Code ilovasida ochiq bo'lsa ogohlantiramiz.
+    # Ikkalasi bitta .jsonl ga yozadi — biri ikkinchisining qatorlarini
+    # bosib ketishi mumkin.
+    if st.session_id and machines.is_online(agent_id):
+        state = await machines.session_state(agent_id, st.session_id)
+        if state.get("open"):
+            where = state.get("entrypoint") or "Claude Code"
+            label = {"claude-desktop": "Claude Code ilovasida",
+                     "cli": "terminalda"}.get(where, f"({where})")
+            await send(
+                "⚠️ <b>Bu sessiya hozir kompyuterda ochiq</b>\n"
+                f"💻 {html.escape(machines.display_name(agent_id))} — "
+                f"{html.escape(label)}\n\n"
+                "Ikkalasi bitta faylga yozadi va yozishmangiz buzilishi "
+                "mumkin. Kompyuterda o'sha sessiyani yopib qo'ying, "
+                "yoki bu yerda /new bilan yangi sessiya boshlang.\n\n"
+                "<i>Vazifa baribir yuborildi.</i>"
+            )
 
     status = await send(
         f"⏳ <b>Boshlandi</b> · 💻 {html.escape(machines.display_name(agent_id))}\n"

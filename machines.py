@@ -46,6 +46,7 @@ class RemoteSession:
     user_turns: int
     mtime: float
     agent_id: str = ""
+    is_open: bool = False   # kompyuterda Claude Code ilovasida ochiqmi
 
     @classmethod
     def from_dict(cls, data: dict, agent_id: str) -> "RemoteSession":
@@ -58,6 +59,7 @@ class RemoteSession:
             user_turns=int(data.get("user_turns") or 0),
             mtime=float(data.get("mtime") or 0.0),
             agent_id=agent_id,
+            is_open=bool(data.get("is_open")),
         )
 
 
@@ -238,6 +240,16 @@ async def run(agent_id: str, prompt: str, cwd: str, session_id: str | None,
         "session_id": session_id,
         "model": model,
     }, on_progress, task_id=task_id)
+
+
+async def session_state(agent_id: str, session_id: str) -> dict:
+    """Sessiya o'sha kompyuterda ochiqmi."""
+    try:
+        return await hub().request(
+            agent_id, protocol.OP_SESSION_STATE,
+            {"session_id": session_id}, timeout=20) or {}
+    except Exception:
+        return {}  # bilolmasak — ogohlantirmaymiz, vazifani to'xtatmaymiz
 
 
 async def noisy_sessions(agent_id: str) -> list[dict]:

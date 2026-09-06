@@ -43,6 +43,7 @@ OP_CANCEL = "cancel"
 OP_INFO = "info"
 OP_NOISY = "noisy_sessions"
 OP_CLEANUP = "cleanup"
+OP_SESSION_STATE = "session_state"
 
 
 def new_id() -> str:
