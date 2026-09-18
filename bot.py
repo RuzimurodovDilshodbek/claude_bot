@@ -33,6 +33,7 @@ from telegram.ext import (
 )
 
 import ai
+import attachments
 import config
 import history
 import hub as hub_mod
@@ -184,15 +185,25 @@ def state_for(scope: Scope) -> ChatState:
 # Ishlayotgan vazifalar
 # --------------------------------------------------------------------------
 @dataclass
+class FollowUp:
+    """Vazifa ishlab turganda kelgan qo'shimcha — navbatda kutadi."""
+
+    prompt: str
+    files: list[attachments.Attachment] = field(default_factory=list)
+
+
+@dataclass
 class RunningTask:
     agent_id: str          # qaysi kompyuterda ketyapti
     task_id: str           # hub orqali bekor qilish uchun
     cwd: str
     prompt: str
     voice_input: bool = False  # ovoz orqali kelgan bo'lsa — javob ham ovozda
+    # Rasm/fayllar — hub'ga uzatilgach bo'shatiladi (xotira).
+    files: list[attachments.Attachment] = field(default_factory=list)
     task: asyncio.Task | None = None  # start_task ichida to'ldiriladi
     started_at: float = field(default_factory=time.time)
-    follow_ups: list[str] = field(default_factory=list)  # ishlab turganda kelgan qo'shimchalar
+    follow_ups: list[FollowUp] = field(default_factory=list)  # ishlab turganda kelgan qo'shimchalar
 
     async def cancel(self) -> None:
         await machines.cancel(self.agent_id, self.task_id)
@@ -422,7 +433,7 @@ async def _quick_action(query, ctx: ContextTypes.DEFAULT_TYPE,
     if not prompt:
         return await query.answer("Noma'lum amal", show_alert=True)
     if scope in _running:
-        _running[scope].follow_ups.append(prompt)
+        _running[scope].follow_ups.append(FollowUp(prompt))
         return await query.answer("Navbatga qo'shildi")
     await query.answer("Boshlanyapti…")
     await _launch(ctx, scope, prompt, voice_input=False)
@@ -1271,19 +1282,50 @@ async def start_task(
     *,
     voice_input: bool = False,
 ) -> None:
-    scope = scope_of(update)
+    await _start_or_queue(ctx, scope_of(update), prompt, voice_input=voice_input,
+                          reply_to=update.effective_message)
+
+
+async def _start_or_queue(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    scope: Scope,
+    prompt: str,
+    *,
+    voice_input: bool,
+    reply_to,
+    box: attachments.PendingBox | None = None,
+) -> None:
+    """Vazifani boshlaydi yoki (ishlab turgan bo'lsa) navbatga qo'yadi.
+
+    Kutayotgan biriktirmalar (rasm, fayl) shu yerda vazifaga qo'shiladi —
+    matn, ovoz va caption yo'llari hammasi shu orqali o'tadi. `box` caption
+    yo'lidan keladi (allaqachon olingan); qolganlar uchun o'zimiz olamiz.
+    """
+    if box is None:
+        box = attachments.take(scope)
+    files = list(box.items) if box is not None else []
+    if box is not None:
+        if box.timer is not None:
+            box.timer.cancel()
+            box.timer = None
+        if box.notice is not None:
+            try:
+                await box.notice.edit_text(f"📎 {box.summary()} vazifaga qo'shildi.")
+            except Exception:
+                pass
+    clip = f"\n📎 {attachments.summary(files)}" if files else ""
+
     active = _running.get(scope)
     if active is not None:
         # Ishlab turgan vazifaga qo'shimcha ko'rsatma sifatida navbatga qo'yamiz.
-        active.follow_ups.append(prompt)
+        active.follow_ups.append(FollowUp(prompt, files))
         elapsed = tgfmt.human_duration(int((time.time() - active.started_at) * 1000))
-        return await update.effective_message.reply_html(
+        return await reply_to.reply_html(
             f"📝 <b>Navbatga qo'shildi</b> (avvalgi ish {elapsed} dan beri ishlayapti)\n"
-            f"<i>{html.escape(tgfmt.trim(prompt, 200))}</i>\n\n"
+            f"<i>{html.escape(tgfmt.trim(prompt, 200))}</i>{clip}\n\n"
             "Avvalgi tugagach o'zi boshlanadi. Zudlik bilan: /stop"
         )
-    await _launch(ctx, scope, prompt, voice_input=voice_input,
-                  reply_to=update.effective_message)
+    await _launch(ctx, scope, prompt, voice_input=voice_input, reply_to=reply_to, files=files)
 
 
 async def _launch(
@@ -1293,9 +1335,11 @@ async def _launch(
     *,
     voice_input: bool = False,
     reply_to=None,
+    files: list[attachments.Attachment] | None = None,
 ) -> None:
-    """Vazifani boshlaydi. `start_task` va follow-up loop shundan foydalanadi."""
+    """Vazifani boshlaydi. `_start_or_queue` va follow-up halqasi shundan foydalanadi."""
     st = state_for(scope)
+    files = list(files or [])
 
     async def send(text: str, *, html_mode: bool = True):
         if reply_to is not None:
@@ -1371,15 +1415,16 @@ async def _launch(
                 "<i>Vazifa baribir yuborildi.</i>"
             )
 
+    clip = f" · 📎 {attachments.summary(files)}" if files else ""
     status = await send(
-        f"⏳ <b>Boshlandi</b> · 💻 {html.escape(machines.display_name(agent_id))}\n"
+        f"⏳ <b>Boshlandi</b> · 💻 {html.escape(machines.display_name(agent_id))}{clip}\n"
         f"<i>{html.escape(tgfmt.trim(prompt, 150))}</i>"
     )
     progress = Progress(status, prompt)
 
     running = RunningTask(
         agent_id=agent_id, task_id=machines.new_task_id(),
-        cwd=st.cwd, prompt=prompt, voice_input=voice_input,
+        cwd=st.cwd, prompt=prompt, voice_input=voice_input, files=files,
     )
     _running[scope] = running
     running.task = asyncio.create_task(_execute(ctx, scope, progress, st, running))
@@ -1411,6 +1456,7 @@ async def _execute(
             running.agent_id, running.prompt, running.cwd,
             st.session_id or None, st.model,
             task_id=running.task_id, on_progress=progress,
+            attachments=running.files,
         )
         result = machines.RunOutcome.from_dict(payload)
     except ConnectionError as exc:
@@ -1428,6 +1474,7 @@ async def _execute(
         result = machines.RunOutcome(ok=False, error=str(exc))
     finally:
         _running.pop(scope, None)
+        running.files = []  # baytlar hub'ga ketdi — xotirani bo'shatamiz
 
     if result.session_id:
         st.session_id = result.session_id
@@ -1506,11 +1553,13 @@ async def _execute(
 
     # Ishlab turganda kelgan qo'shimchalarni ketma-ket bajaramiz.
     for follow in running.follow_ups:
+        clip = f"\n📎 {attachments.summary(follow.files)}" if follow.files else ""
         await send_to(
             ctx.bot, scope,
-            f"▶️ Navbatdagi vazifa:\n<i>{html.escape(tgfmt.trim(follow, 300))}</i>",
+            f"▶️ Navbatdagi vazifa:\n<i>{html.escape(tgfmt.trim(follow.prompt, 300))}</i>{clip}",
         )
-        await _launch(ctx, scope, follow, voice_input=running.voice_input)
+        await _launch(ctx, scope, follow.prompt, voice_input=running.voice_input,
+                      files=follow.files)
 
 
 async def _prepare_voice(report: str) -> tuple[bytes, str]:
