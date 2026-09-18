@@ -1434,10 +1434,13 @@ class Progress:
 
     def render(self) -> str:
         now = time.time()
-        body = "\n".join(html.escape(line) for line in self.lines)
+        # Telegram HTML uchun faqat < > & majburiy — qo'shtirnoq va apostrof
+        # o'z holicha qolsin (`O'ylayapti`, `echo "x"` o'qishga oson).
+        body = "\n".join(html.escape(line, quote=False) for line in self.lines)
         now_line = self._now_line()
         if now_line:
-            body = f"{body}\n{html.escape(now_line)}" if body else html.escape(now_line)
+            now_line = html.escape(now_line, quote=False)
+            body = f"{body}\n{now_line}" if body else now_line
         elapsed = tgfmt.human_duration(int((now - self.started) * 1000))
         text = (
             f"⏳ <b>Ishlayapti</b> · {elapsed} · {self.tool_count} amal\n"
