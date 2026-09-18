@@ -22,6 +22,21 @@ ProgressCb = Callable[[str, str], Awaitable[None]]
 # Bitta JSON qator juda uzun bo'lishi mumkin (katta tool natijalari).
 STREAM_LIMIT = 32 * 1024 * 1024
 
+# Oqimli hodisalar (typing/thinking) Telegramga har deltada emas — shu oraliqda
+# bir marta. Bot baribir 3 s dan tez tahrirlamaydi.
+STREAM_INTERVAL = 2.0
+
+
+class _StreamState:
+    """Partial-message oqimidan typing/thinking hodisalarini siyraklashtiradi."""
+
+    def __init__(self) -> None:
+        self.text_chars = 0
+        self.tail = ""
+        self.thinking_chars = 0
+        self.last_typing = 0.0
+        self.last_thinking = 0.0
+
 
 @dataclass
 class RunResult:
@@ -104,6 +119,10 @@ class ClaudeRun:
         self.started_at = time.time()
         self._proc: asyncio.subprocess.Process | None = None
         self._cancelled = False
+        # `result` hodisasi kelganini bildiradi — shundan keyin jarayon tugashini
+        # kutmaymiz, fonda yig'ib olamiz (`_reaper`).
+        self._saw_result = False
+        self._reaper: asyncio.Task | None = None
 
     # -- jarayonni qurish -------------------------------------------------
     def _argv(self) -> list[str]:
@@ -111,6 +130,7 @@ class ClaudeRun:
             "-p",
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
             "--permission-mode", self.permission_mode,
             "--model", self.model,
         ]
@@ -261,6 +281,7 @@ class ClaudeRun:
     ) -> None:
         assert proc.stdout
         pending_tools: dict[str, str] = {}
+        stream = _StreamState()
 
         while True:
             try:
@@ -280,6 +301,10 @@ class ClaudeRun:
 
             etype = event.get("type")
             subtype = event.get("subtype")
+
+            if etype == "stream_event":
+                await self._on_stream_event(event.get("event") or {}, stream, emit)
+                continue
 
             if etype == "system" and subtype == "init":
                 result.session_id = event.get("session_id") or result.session_id
@@ -318,11 +343,13 @@ class ClaudeRun:
             if etype == "user":
                 message = event.get("message") or {}
                 for block in message.get("content") or []:
-                    if not isinstance(block, dict):
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
                         continue
-                    if block.get("type") == "tool_result" and block.get("is_error"):
-                        desc = pending_tools.get(block.get("tool_use_id") or "", "Tool")
+                    desc = pending_tools.get(block.get("tool_use_id") or "", "Tool")
+                    if block.get("is_error"):
                         await emit("tool_error", f"{desc} — xato")
+                    else:
+                        await emit("tool_done", desc)
                 continue
 
             if etype == "result":
@@ -337,7 +364,44 @@ class ClaudeRun:
                 else:
                     result.ok = True
                     result.text = text
+                self._saw_result = True
                 break
+
+    async def _on_stream_event(self, ev: dict, stream: _StreamState, emit: ProgressCb) -> None:
+        """`--include-partial-messages` hodisalari: blok boshlanishi va deltalar.
+
+        Tool nomi blok boshidayoq ma'lum (input keyin keladi) — shuni darhol
+        aytamiz. Matn/o'ylash deltalarini STREAM_INTERVAL da bir marta yuboramiz.
+        """
+        et = ev.get("type")
+        if et == "content_block_start":
+            block = ev.get("content_block") or {}
+            btype = block.get("type")
+            if btype == "tool_use":
+                await emit("tool_start", block.get("name") or "Tool")
+            elif btype == "text":
+                stream.text_chars, stream.tail, stream.last_typing = 0, "", 0.0
+            elif btype == "thinking":
+                stream.thinking_chars, stream.last_thinking = 0, 0.0
+            return
+        if et != "content_block_delta":
+            return
+        delta = ev.get("delta") or {}
+        dtype = delta.get("type")
+        now = time.time()
+        if dtype == "text_delta":
+            piece = delta.get("text") or ""
+            stream.text_chars += len(piece)
+            stream.tail = (stream.tail + piece)[-80:]
+            if now - stream.last_typing >= STREAM_INTERVAL:
+                stream.last_typing = now
+                await emit("typing", json.dumps(
+                    {"chars": stream.text_chars, "tail": stream.tail}, ensure_ascii=False))
+        elif dtype == "thinking_delta":
+            stream.thinking_chars += len(delta.get("thinking") or "")
+            if now - stream.last_thinking >= STREAM_INTERVAL:
+                stream.last_thinking = now
+                await emit("thinking", str(stream.thinking_chars))
 
 
 def build_prompt(user_text: str) -> str:
