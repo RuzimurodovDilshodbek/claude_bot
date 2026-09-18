@@ -1207,6 +1207,98 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # --------------------------------------------------------------------------
+# Rasm va fayllar
+#
+# Biriktirma darhol vazifa bo'lmaydi: caption bo'lsa qisqa kutib (albomning
+# qolgan bo'laklari kelsin) boshlaymiz; bo'lmasa keyingi matn/ovoz xabari
+# ularni oladi (attachments.py). Har scope uchun bitta taymer.
+# --------------------------------------------------------------------------
+async def _download_attachment(message) -> attachments.Attachment | None:
+    """Xabardagi rasm/faylni yuklaydi. Bo'lmasa yoki xato bo'lsa None
+    (foydalanuvchiga sabab yozib)."""
+    if message.photo:
+        media = message.photo[-1]  # eng katta o'lcham
+        name, mime = f"photo_{message.message_id}.jpg", "image/jpeg"
+    elif message.document:
+        media = message.document
+        name = attachments.safe_name(media.file_name or "", f"file_{message.message_id}")
+        mime = media.mime_type or "application/octet-stream"
+    else:
+        return None
+
+    limit_mb = attachments.MAX_TOTAL_BYTES // (1024 * 1024)
+    if (media.file_size or 0) > attachments.MAX_TOTAL_BYTES:
+        await message.reply_text(
+            f"📎 {name} juda katta — {limit_mb} MB gacha qabul qilinadi."
+        )
+        return None
+    try:
+        tg_file = await media.get_file()
+        data = bytes(await tg_file.download_as_bytearray())
+    except Exception as exc:
+        log.warning("Biriktirma yuklanmadi: %s", exc)
+        await message.reply_text("📎 Faylni yuklab bo'lmadi, qayta yuboring.")
+        return None
+    return attachments.Attachment(name=name, mime=mime, data=data)
+
+
+async def _box_timer(ctx: ContextTypes.DEFAULT_TYPE, scope: Scope,
+                     box: attachments.PendingBox, reply_to) -> None:
+    """Caption bo'lsa — debounce'dan keyin vazifa; bo'lmasa ogohlantirish va eskirish."""
+    try:
+        if box.caption:
+            await asyncio.sleep(attachments.DEBOUNCE_SEC)
+            if not attachments.drop(scope, box):
+                return  # allaqachon olingan (masalan matn kelib qoldi)
+            box.timer = None  # o'z vazifamizni bekor qilib qo'ymaslik uchun
+            await _start_or_queue(ctx, scope, box.caption, voice_input=False,
+                                  reply_to=reply_to, box=box)
+            return
+
+        text = f"📎 {box.summary()} kutmoqda — vazifani yozing yoki ovoz yuboring."
+        if box.notice is None:
+            box.notice = await reply_to.reply_text(text)
+        else:
+            try:
+                await box.notice.edit_text(text)
+            except BadRequest:
+                pass
+        await asyncio.sleep(attachments.TTL_SEC)
+        if attachments.drop(scope, box) and box.notice is not None:
+            try:
+                await box.notice.edit_text("⌛ Biriktirmalar eskirdi — qayta yuboring.")
+            except BadRequest:
+                pass
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("Biriktirma taymeri xatosi")
+
+
+def _schedule_box(ctx: ContextTypes.DEFAULT_TYPE, scope: Scope,
+                  box: attachments.PendingBox, reply_to) -> None:
+    """Har yangi biriktirmada taymer qaytadan boshlanadi."""
+    if box.timer is not None:
+        box.timer.cancel()
+    box.timer = asyncio.create_task(_box_timer(ctx, scope, box, reply_to))
+
+
+async def on_attachment(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        return await deny(update)
+    message = update.effective_message
+    scope = scope_of(update)
+    att = await _download_attachment(message)
+    if att is None:
+        return
+    try:
+        box = attachments.add(scope, att, message.caption or "")
+    except attachments.TooLarge as exc:
+        return await message.reply_text(f"📎 {exc}")
+    _schedule_box(ctx, scope, box, message)
+
+
+# --------------------------------------------------------------------------
 # Vazifani bajarish
 # --------------------------------------------------------------------------
 class Progress:
@@ -1821,6 +1913,7 @@ def main() -> None:
     app.add_handler(CommandHandler(["xarajat", "cost"], cmd_cost))
     app.add_handler(CommandHandler("cleanup", cmd_cleanup))
     app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_attachment))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
