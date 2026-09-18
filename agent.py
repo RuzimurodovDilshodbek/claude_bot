@@ -22,6 +22,7 @@ from pathlib import Path
 import websockets
 
 import config
+import inbox
 import protocol
 import runner
 import sessions
@@ -222,12 +223,30 @@ class Agent:
             }))
             return
 
+        prompt = args.get("prompt") or ""
+        add_dirs: list[str] = []
+        items = args.get("attachments") or []
+        if items:
+            # Rasm/fayllar inbox/<task_id>/ ga yoziladi; Claude ularni Read
+            # bilan ko'radi. Papka --add-dir bilan ruxsatga qo'shiladi.
+            try:
+                saved = inbox.save(rid, items)
+            except (OSError, ValueError) as exc:
+                await self.send(protocol.done(rid, {
+                    "ok": False, "error": f"Biriktirmani saqlab bo'lmadi: {exc}",
+                }))
+                return
+            prompt = inbox.with_attachments(prompt, saved)
+            add_dirs.append(str(saved.folder))
+            log.info("Biriktirmalar: %d ta fayl -> %s", len(saved.files), saved.folder)
+
         run = runner.ClaudeRun(
-            prompt=args.get("prompt") or "",
+            prompt=prompt,
             cwd=cwd,
             session_id=args.get("session_id") or None,
             model=args.get("model") or None,
             permission_mode=args.get("permission_mode") or None,
+            add_dirs=add_dirs,
         )
         self._runs[rid] = run
 
@@ -331,6 +350,10 @@ def main() -> None:
         for p in problems:
             log.error(p)
         raise SystemExit(1)
+
+    removed = inbox.cleanup()
+    if removed:
+        log.info("Inbox tozalandi: %d eski papka", removed)
 
     agent = Agent(hub_url, token, name)
     log.info("Agent: %s (%s)", name, agent.agent_id)
