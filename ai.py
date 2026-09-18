@@ -58,27 +58,37 @@ class GeminiBusy(RuntimeError):
 
 async def _generate(contents, gen_config=None, models: list[str] | None = None,
                     attempts: int = 3):
-    """Modellar ro'yxati bo'yicha qayta urinish bilan so'rov yuboradi."""
+    """Modellar ro'yxati bo'yicha so'rov yuboradi.
+
+    Model 503 ("high demand") qaytarsa o'shani qayta urib vaqt yo'qotmaymiz —
+    darhol keyingisiga o'tamiz. Hammasi band bo'lsagina biroz kutib yana
+    aylanamiz (`attempts` marta). Ilgari har model 3 marta kutib urilardi:
+    ikkita band model = 15–20 s bekorga; o'lchovda transkripsiya 21 s edi.
+    """
     client = _gemini()
-    candidates = models or config.GEMINI_MODELS
+    candidates = list(models or config.GEMINI_MODELS)
     last: BaseException | None = None
     busy = False
 
-    for model in candidates:
-        for attempt in range(attempts):
+    for round_no in range(attempts):
+        if round_no:
+            await asyncio.sleep(1.5 * (2 ** (round_no - 1)))
+        busy = False
+        for model in list(candidates):
             try:
                 return await client.aio.models.generate_content(
                     model=model, contents=contents, config=gen_config
                 )
             except Exception as exc:
                 last = exc
-                code = _status_of(exc)
-                if code in RETRYABLE:
+                if _status_of(exc) in RETRYABLE:
                     busy = True
-                    if attempt < attempts - 1:
-                        await asyncio.sleep(1.5 * (2 ** attempt))
-                        continue
-                break  # boshqa xato — keyingi modelga o'tamiz
+                    continue
+                # Boshqa xato (noto'g'ri so'rov, model yo'q) — bu model
+                # keyingi aylanishda ham yordam bermaydi.
+                candidates.remove(model)
+        if not busy or not candidates:
+            break
 
     if busy:
         raise GeminiBusy(
@@ -122,10 +132,12 @@ async def transcribe(audio: bytes, mime_type: str = "audio/ogg") -> str:
     last: BaseException | None = None
     for mime in dict.fromkeys(mimes):
         try:
+            # Transkripsiyaga "o'ylaydigan" model kerak emas — tez va aniq
+            # flash-lite birinchi (o'lchov: 1 s, "latest" 15–25 s).
             response = await _generate([
                 types.Part.from_bytes(data=audio, mime_type=mime),
                 TRANSCRIBE_PROMPT,
-            ])
+            ], models=config.GEMINI_STT_MODELS)
             text = (response.text or "").strip()
             if text:
                 return text

@@ -36,6 +36,12 @@ GEMINI_MODELS = [GEMINI_MODEL] + [
     m.strip() for m in _FALLBACKS.split(",") if m.strip() and m.strip() != GEMINI_MODEL
 ]
 
+# Ovoz → matn uchun alohida birinchi model: tez va aniq bo'lsin. O'lchov
+# (2026-09): flash-lite 1 s, "latest" (o'ylaydigan, tez-tez 503) 15–25 s.
+# Keyin umumiy ro'yxat zaxira bo'lib qoladi.
+GEMINI_STT_MODEL = os.getenv("GEMINI_STT_MODEL", "gemini-3.1-flash-lite").strip()
+GEMINI_STT_MODELS = [GEMINI_STT_MODEL] + [m for m in GEMINI_MODELS if m != GEMINI_STT_MODEL]
+
 # --- Hub (server) va agent (kompyuter) ---
 # Hub faqat localhost'da tinglaydi; tashqi dunyoga nginx TLS bilan chiqaradi.
 HUB_HOST = os.getenv("HUB_HOST", "127.0.0.1").strip()

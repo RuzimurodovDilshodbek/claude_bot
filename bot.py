@@ -1209,10 +1209,15 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     media = message.voice or message.audio
     mime = getattr(media, "mime_type", None) or "audio/ogg"
     notice = await message.reply_text("🎤 Tinglayapman…")
+    started = time.time()
     try:
         tg_file = await media.get_file()
         audio = bytes(await tg_file.download_as_bytearray())
         text = await ai.transcribe(audio, mime)
+        # Vaqtni yozib boramiz — "ovoz o'tmayapti" degan shikoyatda logdan
+        # sekinlikmi yoki bo'sh javobmi, darrov ko'rinadi.
+        log.info("Ovoz: %d bayt (%s) -> %d belgi, %.1f s",
+                 len(audio), mime, len(text or ""), time.time() - started)
     except ai.GeminiBusy:
         log.warning("Gemini band — ovoz o'girilmadi")
         return await notice.edit_text(
