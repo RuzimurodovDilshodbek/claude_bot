@@ -12,10 +12,15 @@ Bir yo'nalishli oqim emas, so'rov-javob + hodisa oqimi aralash:
 
 Har bir `req` da `id` bor; `res`, `ev` va `done` shu `id` ga bog'lanadi.
 Shu tufayli bitta agentda bir nechta vazifa parallel ketishi mumkin.
+
+`run` so'rovi argumentlari: prompt, cwd, session_id, model, permission_mode va
+ixtiyoriy `attachments` — `pack_file` bilan qadoqlangan fayllar ro'yxati.
 """
 from __future__ import annotations
 
+import base64
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -96,6 +101,47 @@ def done(rid: str, result: dict) -> dict:
 
 def error(message: str) -> dict:
     return {"t": ERROR, "error": message}
+
+
+# --- fayllar ---------------------------------------------------------------
+_BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+NAME_LIMIT = 80
+
+
+def safe_name(raw: str, fallback: str) -> str:
+    """Fayl nomini diskka yozishga yaroqli qiladi.
+
+    Faqat basename olinadi (`../` bilan papkadan chiqib bo'lmaydi), Windows'da
+    taqiqlangan belgilar `_` ga almashadi, uzunlik chegaralanadi. Bo'sh qolsa
+    `fallback`.
+    """
+    name = (raw or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = _BAD_NAME_CHARS.sub("_", name).strip(" ._")
+    if len(name) > NAME_LIMIT:
+        stem, dot, ext = name.rpartition(".")
+        if dot and 0 < len(ext) <= 10:
+            name = stem[: NAME_LIMIT - len(ext) - 1].rstrip(" ._") + "." + ext
+        else:
+            name = name[:NAME_LIMIT]
+    return name or fallback
+
+
+def pack_file(name: str, mime: str, data: bytes) -> dict:
+    """Biriktirmani JSON ichida yuborish uchun base64 ga o'raydi."""
+    return {
+        "name": name,
+        "mime": mime or "application/octet-stream",
+        "data_b64": base64.b64encode(data).decode("ascii"),
+    }
+
+
+def unpack_file(item: dict) -> tuple[str, str, bytes]:
+    """`pack_file` ning teskarisi. Yetishmagan maydonlar bo'sh qiymat oladi."""
+    return (
+        str(item.get("name") or ""),
+        str(item.get("mime") or "application/octet-stream"),
+        base64.b64decode(item.get("data_b64") or ""),
+    )
 
 
 # --- ma'lumot tuzilmalari -------------------------------------------------
