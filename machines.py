@@ -233,12 +233,18 @@ def new_task_id() -> str:
 
 async def run(agent_id: str, prompt: str, cwd: str, session_id: str | None,
               model: str | None, task_id: str | None = None,
-              on_progress: Callable[[str, str], Awaitable[None]] | None = None) -> dict:
+              on_progress: Callable[[str, str], Awaitable[None]] | None = None,
+              attachments: list | None = None) -> dict:
     return await hub().run(agent_id, {
         "prompt": prompt,
         "cwd": cwd,
         "session_id": session_id,
         "model": model,
+        # Rasm/fayllar (attachments.Attachment) — agent inbox/<task_id>/ ga
+        # yozib Claude'ga ko'rsatadi.
+        "attachments": [
+            protocol.pack_file(a.name, a.mime, a.data) for a in (attachments or [])
+        ],
     }, on_progress, task_id=task_id)
 
 
