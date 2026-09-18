@@ -88,6 +88,7 @@ class ClaudeRun:
         model: str | None = None,
         permission_mode: str | None = None,
         persist: bool = True,
+        add_dirs: list[str] | None = None,
     ) -> None:
         self.prompt = prompt
         self.cwd = cwd
@@ -97,6 +98,9 @@ class ClaudeRun:
         self.permission_mode = permission_mode or config.PERMISSION_MODE
         # Sinov yurishlari sessiya ro'yxatini ifloslantirmasligi uchun.
         self.persist = persist
+        # cwd dan tashqaridagi ruxsatli papkalar (masalan biriktirmalar inbox'i) —
+        # acceptEdits rejimida ham Claude ularni so'ramasdan o'qiy oladi.
+        self.add_dirs = list(add_dirs or [])
         self.started_at = time.time()
         self._proc: asyncio.subprocess.Process | None = None
         self._cancelled = False
@@ -116,6 +120,8 @@ class ClaudeRun:
             args += ["--resume", self.resume_id]
         else:
             args += ["--session-id", self.session_id]
+        for folder in self.add_dirs:
+            args += ["--add-dir", folder]
 
         exe = config.CLAUDE_BIN
         if exe.lower().endswith((".cmd", ".bat")):
