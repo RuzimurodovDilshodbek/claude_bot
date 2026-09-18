@@ -1314,8 +1314,20 @@ async def on_attachment(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # --------------------------------------------------------------------------
 # Vazifani bajarish
 # --------------------------------------------------------------------------
+# Tiker — hodisa bo'lmasa ham vaqt va "hozir" qatori yangilanib tursin.
+TICK_SEC = 4.0
+# Ikki tahrir orasidagi eng kam vaqt — Telegram flood (429) bo'lmasin.
+EDIT_MIN_INTERVAL = 3.0
+
+
 class Progress:
-    """Bitta xabarni davriy yangilab, jarayonni ko'rsatib turadi."""
+    """Bitta xabarni davriy yangilab, jarayonni ko'rsatib turadi.
+
+    Ro'yxatda oxirgi 6 hodisa (🔧 tool, ✅ tugagan, ⚠️ xato, 💬 matn), ostida
+    bitta "hozir" qatori: qaysi tool ketyapti / javob yozilyapti / o'ylayapti
+    va qachondan beri. Tiker har TICK_SEC da tahrirlaydi — Claude uzoq jim
+    ishlasa ham xabar muzlamaydi.
+    """
 
     def __init__(self, message, prompt: str) -> None:
         self.message = message
@@ -1326,13 +1338,74 @@ class Progress:
         self.last_edit = 0.0
         self.last_text = ""
         self.lock = asyncio.Lock()
+        # "Hozir" qatori: turi (tool | typing | thinking | ""), matni, qachondan.
+        self.now_kind = ""
+        self.now_text = ""
+        self.now_since = 0.0
+        self._ticker: asyncio.Task | None = None
+
+    # -- tiker ------------------------------------------------------------
+    def start_ticker(self) -> None:
+        if self._ticker is None:
+            self._ticker = asyncio.create_task(self._tick())
+
+    async def stop(self) -> None:
+        """Tikerni to'xtatib, tugashini kutadi — yakuniy tahrir bilan to'qnashmasin."""
+        ticker, self._ticker = self._ticker, None
+        if ticker is not None:
+            ticker.cancel()
+            try:
+                await ticker
+            except asyncio.CancelledError:
+                pass
+
+    async def _tick(self) -> None:
+        while True:
+            await asyncio.sleep(TICK_SEC)
+            await self.flush()
+
+    # -- hodisalar --------------------------------------------------------
+    def _set_now(self, kind: str, text: str) -> None:
+        if self.now_kind != kind:
+            self.now_since = time.time()
+        self.now_kind, self.now_text = kind, text
+
+    def _clear_now(self) -> None:
+        self.now_kind, self.now_text = "", ""
+
+    def _mark_done(self, desc: str) -> None:
+        for i in range(len(self.lines) - 1, -1, -1):
+            if self.lines[i] == f"🔧 {desc}":
+                self.lines[i] = f"✅ {desc}"
+                return
 
     async def __call__(self, kind: str, text: str) -> None:
-        if kind == "tool":
+        if kind == "tool_start":
+            # Nomi ma'lum, tavsifi (fayl, komanda) hali kelmadi.
+            self.now_since = time.time()
+            self.now_kind, self.now_text = "tool", f"{text} …"
+        elif kind == "tool":
             self.tool_count += 1
             self.lines.append(f"🔧 {text}")
+            if self.now_kind == "tool":
+                self.now_text = text  # tool_start'dagi vaqt saqlanadi
+            else:
+                self.now_since = time.time()
+                self.now_kind, self.now_text = "tool", text
+        elif kind == "tool_done":
+            self._mark_done(text)
+            self._clear_now()
         elif kind == "tool_error":
             self.lines.append(f"⚠️ {text}")
+            self._clear_now()
+        elif kind == "typing":
+            try:
+                chars = int(json.loads(text).get("chars") or 0)
+            except (ValueError, AttributeError):
+                chars = 0
+            self._set_now("typing", f"Javob yozilmoqda… {chars} belgi")
+        elif kind == "thinking":
+            self._set_now("thinking", "O'ylayapti…")
         elif kind == "retry":
             self.lines.append(f"🔁 {text}")
         elif kind == "wait":
@@ -1345,23 +1418,39 @@ class Progress:
             self.lines.append(f"▶️ {text}")
         elif kind == "text":
             self.lines.append(f"💬 {tgfmt.trim(text, 120)}")
+            self._clear_now()  # matn keldi — oldingi tool/yozish tugagan
         else:
             return
         self.lines = self.lines[-6:]
         await self.flush()
 
+    # -- ko'rinish --------------------------------------------------------
+    def _now_line(self) -> str:
+        if not self.now_kind:
+            return ""
+        icon = {"tool": "▶", "typing": "✍️", "thinking": "🤔"}[self.now_kind]
+        secs = int(time.time() - self.now_since)
+        return f"{icon} {self.now_text} ({secs} s)"
+
+    def render(self) -> str:
+        now = time.time()
+        body = "\n".join(html.escape(line) for line in self.lines)
+        now_line = self._now_line()
+        if now_line:
+            body = f"{body}\n{html.escape(now_line)}" if body else html.escape(now_line)
+        elapsed = tgfmt.human_duration(int((now - self.started) * 1000))
+        text = (
+            f"⏳ <b>Ishlayapti</b> · {elapsed} · {self.tool_count} amal\n"
+            f"<i>{html.escape(tgfmt.trim(self.prompt, 120))}</i>\n\n{body}"
+        )
+        return tgfmt.trim(text, 3800)
+
     async def flush(self, force: bool = False) -> None:
         now = time.time()
-        if not force and now - self.last_edit < 3.0:
+        if not force and now - self.last_edit < EDIT_MIN_INTERVAL:
             return
         async with self.lock:
-            body = "\n".join(html.escape(line) for line in self.lines)
-            elapsed = tgfmt.human_duration(int((now - self.started) * 1000))
-            text = (
-                f"⏳ <b>Ishlayapti</b> · {elapsed} · {self.tool_count} amal\n"
-                f"<i>{html.escape(tgfmt.trim(self.prompt, 120))}</i>\n\n{body}"
-            )
-            text = tgfmt.trim(text, 3800)
+            text = self.render()
             if text == self.last_text:
                 return
             try:
@@ -1526,6 +1615,7 @@ async def _launch(
         f"<i>{html.escape(tgfmt.trim(prompt, 150))}</i>"
     )
     progress = Progress(status, prompt)
+    progress.start_ticker()
 
     running = RunningTask(
         agent_id=agent_id, task_id=machines.new_task_id(),
@@ -1580,6 +1670,7 @@ async def _execute(
     finally:
         _running.pop(scope, None)
         running.files = []  # baytlar hub'ga ketdi — xotirani bo'shatamiz
+        await progress.stop()
 
     if result.session_id:
         st.session_id = result.session_id
