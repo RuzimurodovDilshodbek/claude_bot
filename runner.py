@@ -249,11 +249,16 @@ class ClaudeRun:
             result.cancelled = True
             raise
         finally:
-            stderr_task.cancel()
-            try:
-                await proc.wait()
-            except Exception:
-                pass
+            if self._saw_result and proc.returncode is None:
+                # Natija qo'lda — jarayon tugashini (~0.6 s) kutmaymiz.
+                # Fonda yig'ib olamiz, zombi qolmasin.
+                self._reaper = asyncio.create_task(_reap(proc, stderr_task))
+            else:
+                stderr_task.cancel()
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
 
         if self._cancelled:
             result.cancelled = True
@@ -402,6 +407,15 @@ class ClaudeRun:
             if now - stream.last_thinking >= STREAM_INTERVAL:
                 stream.last_thinking = now
                 await emit("thinking", str(stream.thinking_chars))
+
+
+async def _reap(proc: asyncio.subprocess.Process, stderr_task: asyncio.Task) -> None:
+    """Natija olingandan keyin jarayonni fonda kutib yig'ib oladi."""
+    try:
+        await proc.wait()
+    except Exception:
+        pass
+    stderr_task.cancel()
 
 
 def build_prompt(user_text: str) -> str:
