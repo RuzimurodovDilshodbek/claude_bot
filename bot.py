@@ -1256,8 +1256,11 @@ async def _box_timer(ctx: ContextTypes.DEFAULT_TYPE, scope: Scope,
                      box: attachments.PendingBox, reply_to) -> None:
     """Caption bo'lsa — debounce'dan keyin vazifa; bo'lmasa ogohlantirish va eskirish."""
     try:
+        # Albom bo'laklari deyarli bir vaqtda keladi — har biri taymerni qayta
+        # boshlaydi. Ogohlantirishni ham shu kutishdan keyin yuboramiz, aks
+        # holda yuborilayotgan paytda bekor qilinib, dublikat chiqib qoladi.
+        await asyncio.sleep(attachments.DEBOUNCE_SEC)
         if box.caption:
-            await asyncio.sleep(attachments.DEBOUNCE_SEC)
             if not attachments.drop(scope, box):
                 return  # allaqachon olingan (masalan matn kelib qoldi)
             box.timer = None  # o'z vazifamizni bekor qilib qo'ymaslik uchun
