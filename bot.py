@@ -22,7 +22,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -285,6 +285,25 @@ def is_conflicting(scope: Scope, agent_id: str, cwd: str) -> Scope | None:
 # Xabar yuborish yordamchilari — Forum Topic ichidagi mavzuga to'g'ri
 # yo'llash uchun har bir chaqiruvga `message_thread_id` qo'shiladi.
 # --------------------------------------------------------------------------
+async def _tg(fn, *args, attempts: int = 3, **kwargs):
+    """Telegram so'rovi; flood (429 RetryAfter) bo'lsa aytilgan vaqtni kutib qayta yuboradi.
+
+    Natija xabari yo'qolmasin — ilgari RetryAfter ushlanmas, vazifa hisoboti
+    butunlay yo'qolardi.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return await fn(*args, **kwargs)
+        except RetryAfter as exc:
+            if attempt == attempts:
+                raise
+            delay = exc.retry_after
+            if hasattr(delay, "total_seconds"):
+                delay = delay.total_seconds()
+            log.warning("Telegram flood: %.1f s kutamiz (%d/%d)", float(delay), attempt, attempts)
+            await asyncio.sleep(float(delay) + 0.5)
+
+
 async def send_to(bot, scope: Scope, text: str, *, html_mode: bool = True,
                   reply_markup=None, **kwargs):
     chat_id, thread_id = scope
@@ -1628,6 +1647,22 @@ async def _launch(
     running.task = asyncio.create_task(_execute(ctx, scope, progress, st, running))
 
 
+async def _send_result(ctx: ContextTypes.DEFAULT_TYPE, scope: Scope, body: str, kb) -> None:
+    """Hisobotni bo'laklab yuboradi; HTML o'tmasa oddiy matn, flood'da kutib qayta."""
+    chunks = tgfmt.html_chunks(body)
+    for index, chunk in enumerate(chunks):
+        is_last = index == len(chunks) - 1
+        try:
+            await _tg(send_to, ctx.bot, scope, chunk,
+                      reply_markup=kb if is_last else None,
+                      disable_web_page_preview=True)
+        except BadRequest:
+            # HTML noto'g'ri chiqsa — oddiy matn bilan yuboramiz.
+            await _tg(send_to, ctx.bot, scope, tgfmt.split_plain(body)[index],
+                      html_mode=False, reply_markup=kb if is_last else None)
+        await asyncio.sleep(0.1)
+
+
 async def _execute(
     ctx: ContextTypes.DEFAULT_TYPE,
     scope: Scope,
@@ -1692,6 +1727,8 @@ async def _execute(
         f"⏱ {elapsed} · 🔧 {len(result.tools_used)} amal · "
         f"🧵 <code>{html.escape(result.session_id[:8])}</code>"
     )
+    if result.model:
+        footer += f" · 🤖 {html.escape(result.model)}"
     if result.cost_usd:
         footer += f" · 💵 ${result.cost_usd:.3f}"
 
@@ -1703,7 +1740,7 @@ async def _execute(
         head = "❌ <b>Xato</b>"
 
     try:
-        await progress.message.edit_text(f"{head}\n{footer}", parse_mode=ParseMode.HTML)
+        await _tg(progress.message.edit_text, f"{head}\n{footer}", parse_mode=ParseMode.HTML)
     except Exception:
         pass
 
@@ -1720,23 +1757,17 @@ async def _execute(
     )
 
     kb = result_keyboard(bool(result.text), failed=not result.ok and not result.cancelled)
-    chunks = tgfmt.html_chunks(body)
-    for index, chunk in enumerate(chunks):
-        is_last = index == len(chunks) - 1
+    try:
+        await _send_result(ctx, scope, body, kb)
+    except Exception as exc:
+        # Natija yo'qolmasin — hech bo'lmasa sababini aytamiz; follow-up'lar davom etadi.
+        log.exception("Natijani yuborib bo'lmadi")
         try:
-            await send_to(
-                ctx.bot, scope, chunk,
-                reply_markup=kb if is_last else None,
-                disable_web_page_preview=True,
-            )
-        except BadRequest:
-            # HTML noto'g'ri chiqsa — oddiy matn bilan yuboramiz.
-            await send_to(
-                ctx.bot, scope, tgfmt.split_plain(body)[index],
-                html_mode=False,
-                reply_markup=kb if is_last else None,
-            )
-        await asyncio.sleep(0.1)
+            await send_to(ctx.bot, scope,
+                          f"❌ Natijani yuborib bo'lmadi: {tgfmt.trim(str(exc), 200)}",
+                          html_mode=False)
+        except Exception:
+            pass
 
     if voice_task is not None:
         try:

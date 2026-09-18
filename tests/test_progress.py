@@ -109,3 +109,39 @@ def test_edit_throttle(monkeypatch):
 
     asyncio.run(go())
     assert len(msg.edits) == 1
+
+
+from telegram.error import RetryAfter
+
+
+def test_tg_retries_after_flood(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def fake_sleep(sec):
+        sleeps.append(sec)
+
+    monkeypatch.setattr(bot.asyncio, "sleep", fake_sleep)
+
+    async def send(text):
+        calls.append(text)
+        if len(calls) == 1:
+            raise RetryAfter(2)
+        return "ok"
+
+    assert asyncio.run(bot._tg(send, "salom")) == "ok"
+    assert calls == ["salom", "salom"]
+    assert sleeps and sleeps[0] >= 2
+
+
+def test_tg_gives_up_after_attempts(monkeypatch):
+    async def fake_sleep(sec):
+        pass
+
+    monkeypatch.setattr(bot.asyncio, "sleep", fake_sleep)
+
+    async def send():
+        raise RetryAfter(1)
+
+    with pytest.raises(RetryAfter):
+        asyncio.run(bot._tg(send))
