@@ -22,6 +22,8 @@ state.json
 # vazifalar tarixi — promptlaringiz bor, shaxsiy
 history.jsonl
 .restarted
+# Telegramdan kelgan biriktirmalar (rasm, fayl) — vazifa bo'yicha papkalar
+inbox/
 
 # === Muhit va loglar ===
 .venv/
