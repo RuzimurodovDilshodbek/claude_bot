@@ -91,6 +91,7 @@ Har bir qatorda `[OK]` bo'lishi kerak.
 | Komanda | Nima qiladi |
 |---|---|
 | *(matn yoki ovoz)* | Vazifa sifatida bajariladi |
+| *(rasm yoki fayl)* | Caption bilan — darhol vazifa; caption'siz — keyingi matn/ovoz bilan birga. Albom bo'ladi. Claude faylni o'zi ko'radi (`inbox/` papkasi) |
 | `/pc` | Kompyuter tanlash; bittasi yoniq bo'lsa avtomatik |
 | `/sessions` | Shu loyihaning sessiyalari — bosib davom ettirasiz |
 | `/sessions all` | Barcha loyihalar bo'yicha |
@@ -179,6 +180,8 @@ Gemini bepul tierda tez-tez `503 high demand` qaytaradi, shuning uchun
 | `agent.py` | Kompyuterda ishlaydi, Claude ni chaqiradi |
 | `protocol.py` | Hub ↔ agent xabar formati |
 | `machines.py` | Bot uchun kompyuterlar bilan ishlash qatlami |
+| `attachments.py` | Rasm/fayllar uchun kutish ro'yxati (bot tomonida) |
+| `inbox.py` | Agentda biriktirmalarni `inbox/<vazifa>/` ga yozish |
 | `runner.py` | Claude CLI va `stream-json` oqimi |
 | `sessions.py` | `~/.claude/projects` dan sessiyalarni o'qish |
 | `ai.py` | Gemini (ovoz→matn, xulosa) va ovoz sintezi |

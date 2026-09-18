@@ -446,6 +446,9 @@ HELP = """<b>Claude Code — Telegram boshqaruvi</b>
 
 Shunchaki <b>matn</b> yoki <b>ovozli xabar</b> yuboring — u tanlangan sessiyada vazifa sifatida bajariladi.
 Ovozda so'rasangiz, javob ham avtomatik ovozda keladi.
+<b>Rasm yoki fayl</b> ham yuborsa bo'ladi: caption bilan — darhol vazifa;
+caption'siz — keyingi matn yoki ovoz bilan birga ketadi (15 daqiqa kutadi).
+Albom ham bo'ladi. Claude fayllarni o'zi ko'radi.
 
 <b>Kompyuterlar</b>
 /pc — ulangan kompyuterlar; birini tanlash
@@ -874,16 +877,23 @@ async def cmd_projects(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return await deny(update)
-    st = state_for(scope_of(update))
+    scope = scope_of(update)
+    st = state_for(scope)
     if not st.cwd:
         return await update.effective_message.reply_text(
             "Avval loyihani tanlang: /projects"
         )
     st.session_id = ""
     save_states()
+    dropped = attachments.clear(scope)
+    if dropped is not None and dropped.timer is not None:
+        dropped.timer.cancel()
+    extra = ""
+    if dropped is not None and dropped.items:
+        extra = f"\n📎 Kutayotgan biriktirmalar ({dropped.summary()}) tashlab yuborildi."
     await update.effective_message.reply_html(
-        "🆕 Yangi sessiya. Keyingi xabaringiz yangi suhbatni boshlaydi.\n\n"
-        + _where_text(st)
+        "🆕 Yangi sessiya. Keyingi xabaringiz yangi suhbatni boshlaydi."
+        f"{extra}\n\n" + _where_text(st)
     )
 
 
